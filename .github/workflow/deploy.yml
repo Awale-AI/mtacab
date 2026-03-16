@@ -1,0 +1,82 @@
+name: Deploy to EC2
+ 
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+ 
+env:
+  APP_NAME: mtacab-service
+  DEPLOY_PATH: /var/www/mtacab/
+  NODE_VERSION: "18"
+ 
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+ 
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Setup directory
+            sudo mkdir -p ${{ env.DEPLOY_PATH }}
+            sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
+            cd ${{ env.DEPLOY_PATH }}
+            # Pull latest code
+            echo "Pulling latest code..."
+            if [ -d ".git" ]; then
+              git pull origin main
+            else
+              echo "Cloning repository for the first time..."
+              git clone https://github.com/${{ github.repository }}.git .
+            fi
+            # Docker commands
+            echo "Stopping old container..."
+            docker stop ${{ env.APP_NAME }} || true
+            docker rm ${{ env.APP_NAME }} || true
+            echo "Building new image..."
+            docker build -t ${{ env.APP_NAME }} .
+            echo "Starting new container..."
+            docker run -d -p 7070:7070 \
+              --name ${{ env.APP_NAME }} \
+              --restart always \
+              ${{ env.APP_NAME }}
+            # Health check
+            echo "Running health check..."
+            sleep 8
+            if curl -f http://localhost:7070 > /dev/null 2>&1; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Deployment failed!"
+              docker logs ${{ env.APP_NAME }}
+              exit 1
+            fi
+            echo "✅ Deployment completed successfully!"
+      - name: Deployment Success
+        run: |
+          echo "🚀 =================================="
+          echo "✅ DEPLOYMENT SUCCESSFUL!"
+          echo "🚀 =================================="
+          echo "📦 App: ${{ env.APP_NAME }}"
+          echo "📍 Location: ${{ env.DEPLOY_PATH }}"
+          echo "🌐 URL: http://${{ secrets.EC2_HOST }}:7070"
